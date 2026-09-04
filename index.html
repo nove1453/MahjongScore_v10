@@ -170,6 +170,7 @@
         const [analysisSelectedNames, setAnalysisSelectedNames] = useState([]);
         const [analysisStartDate, setAnalysisStartDate] = useState(() => `${new Date().getFullYear()}-01-01`);
         const [analysisEndDate, setAnalysisEndDate] = useState("");
+        const [analysisChartType, setAnalysisChartType] = useState('income');
         const [showMemberEditor, setShowMemberEditor] = useState(false);
         const [showNewSetModal, setShowNewSetModal] = useState(false);
         const [modalSetup, setModalSetup] = useState({ rate: 50, chipRate: 100, selectedIds: [] });
@@ -563,10 +564,11 @@
                         res[p.name] = { name: p.name, scoreTotal: 0, scoreWithChip: 0, income: 0, games: 0, ranks: [], history: [] };
                     }
                     const scoreWithChip = p.scoreTotal + getChipPoints(p.chip, rate, chipRate);
+                    const incomeNoFee = (p.scoreTotal * rate) + ((parseFloat(p.chip) || 0) * chipRate);
                     res[p.name].scoreTotal += p.scoreTotal;
                     res[p.name].scoreWithChip += scoreWithChip;
-                    res[p.name].income += p.income;
-                    res[p.name].history.push({ date: hDate, scoreTotal: p.scoreTotal });
+                    res[p.name].income += incomeNoFee;
+                    res[p.name].history.push({ date: hDate, scoreWithChip, income: incomeNoFee });
                 });
             });
 
@@ -583,7 +585,7 @@
                 const data = [0];
                 dateLabels.forEach(date => {
                     p.history.filter(h => h.date === date).forEach(h => {
-                        running += h.scoreTotal;
+                        running += analysisChartType === 'income' ? h.income : h.scoreWithChip;
                     });
                     data.push(running);
                 });
@@ -599,7 +601,7 @@
                 };
             });
             return { labels: ['', ...dateLabels], datasets };
-        }, [analysisTotals]);
+        }, [analysisTotals, analysisChartType]);
 
         useEffect(() => {
             if (activeTab === 'stats' && chartRef.current) {
@@ -934,7 +936,14 @@
                             </div>
 
                             <div className="space-y-3">
-                                <span className="text-[10px] font-black text-slate-300 uppercase">推移グラフ</span>
+                                <div className="flex justify-between items-center">
+                                    <span className="text-[10px] font-black text-slate-300 uppercase">推移グラフ</span>
+                                    <div className="flex bg-slate-100 p-1 rounded-2xl text-[10px] font-black gap-1">
+                                        {[{id:'income', l:'収支'}, {id:'scoreWithChip', l:'チップ込み点数'}].map(t => (
+                                            <button key={t.id} onClick={() => setAnalysisChartType(t.id)} className={`px-3 py-1.5 rounded-xl transition-all ${analysisChartType === t.id ? 'bg-white text-rose-500 shadow-sm' : 'text-slate-400'}`}>{t.l}</button>
+                                        ))}
+                                    </div>
+                                </div>
                                 <div className="bg-white border border-slate-100 rounded-[32px] p-6 shadow-sm space-y-4">
                                     <div className="h-64 relative"><canvas ref={analysisChartRef}></canvas></div>
                                     <div className="flex flex-wrap gap-2">
