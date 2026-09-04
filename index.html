@@ -167,7 +167,9 @@
         const [statSelectedNames, setStatSelectedNames] = useState([]);
         const [statType, setStatType] = useState('income');
 
-        const [selectedAnalysisMembers, setSelectedAnalysisMembers] = useState([]);
+        const [analysisSelectedNames, setAnalysisSelectedNames] = useState([]);
+        const [analysisStartDate, setAnalysisStartDate] = useState(() => `${new Date().getFullYear()}-01-01`);
+        const [analysisEndDate, setAnalysisEndDate] = useState("");
         const [showMemberEditor, setShowMemberEditor] = useState(false);
         const [showNewSetModal, setShowNewSetModal] = useState(false);
         const [modalSetup, setModalSetup] = useState({ rate: 50, chipRate: 100, selectedIds: [] });
@@ -177,6 +179,8 @@
 
         const chartRef = useRef(null);
         const trendChartInstance = useRef(null);
+        const analysisChartRef = useRef(null);
+        const analysisChartInstance = useRef(null);
 
         useEffect(() => {
             try {
@@ -509,6 +513,94 @@
             });
         }, [stats, statType]);
 
+        const analysisTotals = useMemo(() => {
+            const res = {};
+            const selectedNames = analysisSelectedNames.length > 0 ? analysisSelectedNames : db.members.map(m => m.name);
+            selectedNames.forEach(name => {
+                res[name] = {
+                    name,
+                    scoreTotal: 0,
+                    scoreWithChip: 0,
+                    income: 0,
+                    games: 0,
+                    ranks: [],
+                    history: []
+                };
+            });
+
+            const filteredHistory = [...db.history].filter(h => {
+                if (!h || !Array.isArray(h.players)) return false;
+                const hDate = h.date.split('T')[0];
+                if (analysisStartDate && hDate < analysisStartDate) return false;
+                if (analysisEndDate && hDate > analysisEndDate) return false;
+                const names = h.players.map(p => p.name);
+                return selectedNames.length > 0 && selectedNames.every(name => names.includes(name));
+            }).sort((a, b) => new Date(a.date) - new Date(b.date));
+
+            filteredHistory.forEach(h => {
+                const hDate = h.date.split('T')[0];
+                const roundCount = h.players.length ? Math.max(...h.players.map(p => (p.scores || []).length), 0) : 0;
+
+                for (let ri = 0; ri < roundCount; ri++) {
+                    const roundScores = h.players.map(p => ({ name: p.name, score: parseFloat(p.scores[ri]) || 0 }));
+                    const sorted = [...roundScores].sort((a, b) => b.score - a.score);
+                    roundScores.filter(ps => selectedNames.includes(ps.name)).forEach(ps => {
+                        if (!res[ps.name]) {
+                            res[ps.name] = { name: ps.name, scoreTotal: 0, scoreWithChip: 0, income: 0, games: 0, ranks: [], history: [] };
+                        }
+                        const rank = sorted.findIndex(x => x.name === ps.name) + 1;
+                        if (rank > 0) {
+                            res[ps.name].ranks.push(rank);
+                            res[ps.name].games += 1;
+                        }
+                    });
+                }
+
+                const rate = parseFloat(h.rate) || 0;
+                const chipRate = parseFloat(h.chipRate) || 0;
+                calcPlayerStats(h).filter(p => selectedNames.includes(p.name)).forEach(p => {
+                    if (!res[p.name]) {
+                        res[p.name] = { name: p.name, scoreTotal: 0, scoreWithChip: 0, income: 0, games: 0, ranks: [], history: [] };
+                    }
+                    const scoreWithChip = p.scoreTotal + getChipPoints(p.chip, rate, chipRate);
+                    res[p.name].scoreTotal += p.scoreTotal;
+                    res[p.name].scoreWithChip += scoreWithChip;
+                    res[p.name].income += p.income;
+                    res[p.name].history.push({ date: hDate, scoreTotal: p.scoreTotal });
+                });
+            });
+
+            return Object.values(res).map(p => ({
+                ...p,
+                avgRank: p.games ? p.ranks.reduce((sum, rank) => sum + rank, 0) / p.games : 0
+            })).sort((a, b) => b.scoreTotal - a.scoreTotal);
+        }, [db.history, db.members, analysisSelectedNames, analysisStartDate, analysisEndDate]);
+
+        const analysisChartData = useMemo(() => {
+            const dateLabels = Array.from(new Set(analysisTotals.flatMap(p => p.history.map(h => h.date)))).sort();
+            const datasets = analysisTotals.map((p, idx) => {
+                let running = 0;
+                const data = [0];
+                dateLabels.forEach(date => {
+                    p.history.filter(h => h.date === date).forEach(h => {
+                        running += h.scoreTotal;
+                    });
+                    data.push(running);
+                });
+                return {
+                    label: p.name,
+                    data,
+                    borderColor: colors[idx % colors.length],
+                    backgroundColor: 'transparent',
+                    borderWidth: 3,
+                    tension: 0.25,
+                    pointRadius: 3,
+                    pointBackgroundColor: '#fff'
+                };
+            });
+            return { labels: ['', ...dateLabels], datasets };
+        }, [analysisTotals]);
+
         useEffect(() => {
             if (activeTab === 'stats' && chartRef.current) {
                 if (!window.Chart) return;
@@ -536,6 +628,26 @@
                 });
             }
         }, [activeTab, stats, statSelectedNames, statType, sortedStatNames]);
+
+        useEffect(() => {
+            if (activeTab === 'analysis' && analysisChartRef.current) {
+                if (!window.Chart) return;
+                if (analysisChartInstance.current) analysisChartInstance.current.destroy();
+
+                analysisChartInstance.current = new window.Chart(analysisChartRef.current.getContext('2d'), {
+                    type: 'line',
+                    data: analysisChartData,
+                    options: {
+                        plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+                        scales: {
+                            x: { ticks: { font: { size: 8 }, maxRotation: 45 }, grid: { display: false } },
+                            y: { grid: { color: '#f1f5f9' } }
+                        },
+                        maintainAspectRatio: false
+                    }
+                });
+            }
+        }, [activeTab, analysisChartData]);
 
         const applyValue = () => {
             if (!activeField) return;
@@ -755,45 +867,86 @@
                     {activeTab === 'analysis' && (
                         <div className="p-6 space-y-6 animate-in">
                             <h2 className="text-2xl font-black italic flex items-center gap-2"><Icon name="Swords" className="text-rose-500" />相性分析</h2>
-                            <div className="bg-slate-100/50 p-2 rounded-[24px] flex flex-wrap gap-2">
-                                {db.members.map(m => (
-                                    <button key={m.id} onClick={() => setSelectedAnalysisMembers(prev => prev.includes(m.name) ? prev.filter(n => n !== m.name) : [...prev, m.name].slice(-4))} className={`px-4 py-2 rounded-full border text-xs font-black transition-all ${selectedAnalysisMembers.includes(m.name) ? 'bg-slate-900 text-white shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>{m.name}</button>
-                                ))}
-                            </div>
-                            {selectedAnalysisMembers.map(target => (
-                                <div key={target} className="mt-8">
-                                    <div className="text-[10px] font-black text-rose-500 italic bg-rose-50 px-3 py-1 rounded-full mb-4 border border-rose-100 uppercase">{target} VS OTHERS</div>
-                                    <div className="grid gap-3">
-                                        {selectedAnalysisMembers.filter(n => n !== target).map(otherName => {
-                                            let incomeDiff = 0, scoreDiff = 0, matchCount = 0;
-                                            db.history.forEach(h => {
-                                                const pT = h.players.find(p => p.name === target);
-                                                const pO = h.players.find(p => p.name === otherName);
-                                                if (pT && pO) {
-                                                    const rate = parseFloat(h.rate) || 0, chipRate = parseFloat(h.chipRate) || 0;
-                                                    const pTStats = calcPlayerStats(h).find(s => s.name === target);
-                                                    const pOStats = calcPlayerStats(h).find(s => s.name === otherName);
-                                                    
-                                                    incomeDiff += (pTStats.income - pOStats.income);
-                                                    const totalT = pTStats.scoreTotal + getChipPoints(pTStats.chip, rate, chipRate);
-                                                    const totalO = pOStats.scoreTotal + getChipPoints(pOStats.chip, rate, chipRate);
-                                                    scoreDiff += (totalT - totalO);
-                                                    matchCount++;
-                                                }
-                                            });
-                                            return (
-                                                <div key={otherName} className="bg-white p-5 rounded-[24px] border border-slate-100 flex justify-between items-center shadow-sm">
-                                                    <div><div className="font-black text-slate-700">{otherName}</div><div className="text-[9px] text-slate-300 font-bold uppercase">{matchCount} MATCHES</div></div>
-                                                    <div className="text-right">
-                                                        <div className={`text-lg font-black italic ${incomeDiff >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{incomeDiff >= 0 ? '+' : ''}{Math.round(incomeDiff).toLocaleString()}円</div>
-                                                        <div className="text-[10px] font-bold text-slate-400">{scoreDiff >= 0 ? '+' : ''}{(parseFloat(scoreDiff) || 0).toFixed(1)}pt</div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
+
+                            <div className="space-y-3">
+                                <span className="text-[10px] font-black text-slate-300 uppercase">期間</span>
+                                <div className="bg-white border border-slate-100 p-4 rounded-[24px] shadow-sm space-y-3">
+                                    <div className="flex gap-2 items-center">
+                                        <input type="date" value={analysisStartDate} onChange={(e) => setAnalysisStartDate(e.target.value)} className="flex-1" />
+                                        <span className="text-slate-300 text-xs">〜</span>
+                                        <input type="date" value={analysisEndDate} onChange={(e) => setAnalysisEndDate(e.target.value)} className="flex-1" />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button onClick={() => { const y = new Date().getFullYear(); setAnalysisStartDate(`${y}-01-01`); setAnalysisEndDate(""); }} className="py-2 rounded-xl bg-slate-50 text-slate-500 text-[10px] font-black">今年</button>
+                                        <button onClick={() => { setAnalysisStartDate(""); setAnalysisEndDate(""); }} className="py-2 rounded-xl bg-slate-50 text-slate-500 text-[10px] font-black">全期間</button>
                                     </div>
                                 </div>
-                            ))}
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-[10px] font-black text-slate-300 uppercase">対象プレイヤー</span>
+                                    <span className="text-[10px] font-black text-rose-400">{analysisSelectedNames.length > 0 ? `${analysisSelectedNames.length}人選択中` : '全員'}</span>
+                                </div>
+                                <div className="bg-slate-100/50 p-2 rounded-[24px] flex flex-wrap gap-2">
+                                    {db.members.map(m => (
+                                        <button key={m.id} onClick={() => setAnalysisSelectedNames(prev => prev.includes(m.name) ? prev.filter(name => name !== m.name) : [...prev, m.name])} className={`px-4 py-2 rounded-full border text-xs font-black transition-all ${analysisSelectedNames.includes(m.name) ? 'bg-rose-500 text-white border-rose-500 shadow-lg' : 'bg-white text-slate-400 border-slate-200'}`}>{m.name}</button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-[10px] font-black text-slate-300 uppercase">トータル表</span>
+                                    <span className="text-[10px] font-black text-rose-400">{analysisSelectedNames.length > 0 ? analysisSelectedNames.join('・') : '全員'}</span>
+                                </div>
+                                <div className="bg-white border border-slate-100 rounded-[24px] shadow-sm overflow-x-auto no-scrollbar">
+                                    <table className="w-full min-w-[680px] text-left border-collapse">
+                                        <thead>
+                                            <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase">
+                                                <th className="p-4 sticky left-0 bg-slate-50 z-10">プレイヤー</th>
+                                                <th className="p-4 text-right">合計点数</th>
+                                                <th className="p-4 text-right">チップ込み合計</th>
+                                                <th className="p-4 text-right">収支</th>
+                                                <th className="p-4 text-right">対戦数</th>
+                                                <th className="p-4 text-right">平均順位</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {analysisTotals.map((p, idx) => (
+                                                <tr key={p.name} className="border-t border-slate-50">
+                                                    <td className="p-4 sticky left-0 bg-white z-10">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="w-7 h-7 rounded-xl flex items-center justify-center font-black text-white text-[10px]" style={{backgroundColor: colors[idx % colors.length]}}>{idx + 1}</div>
+                                                            <span className="font-black text-slate-800 text-sm whitespace-nowrap">{p.name}</span>
+                                                        </div>
+                                                    </td>
+                                                    <td className={`p-4 text-right font-black italic ${p.scoreTotal >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{p.scoreTotal >= 0 ? '+' : ''}{p.scoreTotal.toFixed(1)}pt</td>
+                                                    <td className={`p-4 text-right font-black ${p.scoreWithChip >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{p.scoreWithChip >= 0 ? '+' : ''}{p.scoreWithChip.toFixed(1)}pt</td>
+                                                    <td className={`p-4 text-right font-black ${p.income >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{p.income >= 0 ? '+' : ''}{Math.round(p.income).toLocaleString()}円</td>
+                                                    <td className="p-4 text-right font-black text-slate-900">{p.games}回</td>
+                                                    <td className="p-4 text-right font-black text-slate-900">{p.avgRank ? p.avgRank.toFixed(2) : '0.00'}位</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <div className="space-y-3">
+                                <span className="text-[10px] font-black text-slate-300 uppercase">推移グラフ</span>
+                                <div className="bg-white border border-slate-100 rounded-[32px] p-6 shadow-sm space-y-4">
+                                    <div className="h-64 relative"><canvas ref={analysisChartRef}></canvas></div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {analysisTotals.map((p, idx) => (
+                                            <div key={p.name} className="flex items-center gap-1.5 text-[10px] font-black text-slate-500">
+                                                <span className="w-2.5 h-2.5 rounded-full" style={{backgroundColor: colors[idx % colors.length]}}></span>
+                                                {p.name}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     )}
 
