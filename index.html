@@ -271,7 +271,11 @@
                     rs.sort((a, b) => b.s - a.s);
                     ranks.push(rs.findIndex(x => x.n === p.name) + 1);
                 }
-                return { name: p.name, totalPt: p.scoreTotal + getChipPoints(p.chip, h.rate, h.chipRate), netIncome: p.income, ranks };
+                const rate = parseFloat(h.rate) || 0;
+                const chipRate = parseFloat(h.chipRate) || 0;
+                const grossIncome = (p.scoreTotal * rate) + ((parseFloat(p.chip) || 0) * chipRate);
+                const avgRank = ranks.length ? ranks.reduce((a, b) => a + b, 0) / ranks.length : 0;
+                return { name: p.name, totalPt: p.scoreTotal + getChipPoints(p.chip, h.rate, h.chipRate), netIncome: p.income, grossIncome, avgRank, ranks };
             });
             summary.sort((a, b) => b.totalPt - a.totalPt);
 
@@ -279,7 +283,7 @@
             const W = 430, PAD = 14, IW = W - PAD * 2;
             const HEADER_H = 88, RANK_H = 86, ROW_H = 26, THEAD_H = 30, FOOTER_H = 34;
             const totalH = PAD * 2 + HEADER_H + 10 + summary.length * RANK_H + 14
-                         + 18 + THEAD_H + roundCount * ROW_H + ROW_H + ROW_H + 6 + 18 + FOOTER_H;
+                         + 18 + THEAD_H + roundCount * ROW_H + ROW_H + ROW_H + ROW_H + 6 + 18 + FOOTER_H;
 
             const scale = 3;
             const canvas = document.createElement('canvas');
@@ -366,11 +370,14 @@
 
                 // income
                 const incStr = (s.netIncome >= 0 ? '+' : '') + Math.round(s.netIncome).toLocaleString() + '円';
-                T(incStr, W - PAD - 8, cy + 22, { sz: 16, w: '900', c: s.netIncome >= 0 ? '#1e293b' : '#dc2626', a: 'right' });
+                const grossStr = '(' + (s.grossIncome >= 0 ? '+' : '') + Math.round(s.grossIncome).toLocaleString() + '円)';
+                T(incStr, W - PAD - 8, cy + 18, { sz: 15, w: '900', c: s.netIncome >= 0 ? '#1e293b' : '#dc2626', a: 'right' });
+                T(grossStr, W - PAD - 8, cy + 34, { sz: 9, w: '700', c: s.grossIncome >= 0 ? '#64748b' : '#dc2626', a: 'right' });
 
                 // pt
                 const ptStr = (s.totalPt >= 0 ? '+' : '') + s.totalPt.toFixed(1) + 'pt';
-                T(ptStr, W - PAD - 8, cy + 44, { sz: 11, w: '700', c: s.totalPt >= 0 ? '#2563eb' : '#ef4444', a: 'right' });
+                T(ptStr, W - PAD - 8, cy + 50, { sz: 10, w: '700', c: s.totalPt >= 0 ? '#2563eb' : '#ef4444', a: 'right' });
+                T('平均 ' + (s.avgRank ? s.avgRank.toFixed(2) : '0.00') + '位', W - PAD - 8, cy + 64, { sz: 9, w: '700', c: '#64748b', a: 'right' });
 
                 cy += RANK_H;
             });
@@ -392,15 +399,33 @@
             });
             cy += THEAD_H;
 
+            const rankCapsules = [
+                { bg: '#fef3c7', fg: '#b45309', br: '#f59e0b' },
+                { bg: '#e0f2fe', fg: '#0369a1', br: '#38bdf8' },
+                { bg: '#fce7f3', fg: '#be185d', br: '#f472b6' },
+                { bg: '#ede9fe', fg: '#6d28d9', br: '#8b5cf6' }
+            ];
+
             // score rows
             for (let ri = 0; ri < roundCount; ri++) {
                 if (ri % 2 === 1) { ctx.fillStyle = '#f8fafc'; ctx.fillRect(PAD, cy + ri * ROW_H, IW, ROW_H); }
                 ctx.fillStyle = '#e2e8f0'; ctx.fillRect(PAD, cy + ri * ROW_H, IW, 1);
                 T((ri + 1) + '局', PAD + C0 / 2, cy + ri * ROW_H + ROW_H / 2, { sz: 8, w: '900', c: '#cbd5e1', a: 'center' });
+                const roundRanks = h.players.map(pl => ({ n: pl.name, s: parseFloat(pl.scores[ri]) || 0 })).sort((a, b) => b.s - a.s);
                 h.players.forEach((p, pi) => {
                     const v = parseFloat(p.scores[ri]) || 0;
-                    T((v > 0 ? '+' : '') + v, PAD + C0 + CW * pi + CW / 2, cy + ri * ROW_H + ROW_H / 2,
-                      { sz: 10, w: '700', c: v > 0 ? '#3b82f6' : v < 0 ? '#ef4444' : '#94a3b8', a: 'center' });
+                    const rank = roundRanks.findIndex(x => x.n === p.name) + 1;
+                    const cellX = PAD + C0 + CW * pi;
+                    const midY = cy + ri * ROW_H + ROW_H / 2;
+                    const pill = rankCapsules[(rank - 1) % rankCapsules.length];
+                    const pillW = Math.min(24, Math.max(20, CW * 0.34));
+                    const pillH = 14;
+                    const pillX = cellX + CW - pillW - 4;
+                    const pillY = midY - pillH / 2;
+                    T((v > 0 ? '+' : '') + v, pillX - 4, midY,
+                      { sz: 9, w: '700', c: v > 0 ? '#3b82f6' : v < 0 ? '#ef4444' : '#94a3b8', a: 'right', mw: Math.max(20, CW - pillW - 8) });
+                    rr(pillX, pillY, pillW, pillH, pillH / 2, pill.bg, pill.br, 1);
+                    T(rank + '位', pillX + pillW / 2, midY, { sz: 7, w: '900', c: pill.fg, a: 'center' });
                 });
             }
             cy += roundCount * ROW_H;
@@ -413,6 +438,17 @@
                 const chip = parseFloat(p.chip) || 0;
                 T((chip > 0 ? '+' : '') + chip + '枚', PAD + C0 + CW * pi + CW / 2, cy + ROW_H / 2,
                   { sz: 10, w: '700', c: chip > 0 ? '#d97706' : chip < 0 ? '#dc2626' : '#94a3b8', a: 'center' });
+            });
+            cy += ROW_H;
+
+            // fee row
+            ctx.fillStyle = '#f8fafc'; ctx.fillRect(PAD, cy, IW, ROW_H);
+            ctx.fillStyle = '#cbd5e1'; ctx.fillRect(PAD, cy, IW, 1);
+            T('FEE', PAD + C0 / 2, cy + ROW_H / 2, { sz: 8, w: '900', c: '#64748b', a: 'center' });
+            h.players.forEach((p, pi) => {
+                const fee = parseFloat(p.fee) || 0;
+                T(fee.toLocaleString() + '円', PAD + C0 + CW * pi + CW / 2, cy + ROW_H / 2,
+                  { sz: 9, w: '700', c: fee > 0 ? '#64748b' : '#94a3b8', a: 'center', mw: CW - 2 });
             });
             cy += ROW_H;
 
